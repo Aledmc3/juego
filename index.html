@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Camino a la Rosada</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #111; overflow: hidden; font-family: Arial, sans-serif; touch-action: none; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #ui { position: fixed; top: 15px; left: 15px; color: #fff; font-size: 22px; font-weight: bold; z-index: 10; text-shadow: 2px 2px 6px #000; }
+  #gameover { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: none; flex-direction: column; align-items: center; justify-content: center; color: #fff; z-index: 20; text-align: center; padding: 20px; }
+  #gameover h1 { font-size: 36px; margin-bottom: 10px; }
+  #gameover p { font-size: 22px; margin-bottom: 8px; }
+  #gameover .hs { font-size: 18px; color: #ffd700; margin-bottom: 25px; }
+  #gameover button { padding: 15px 45px; font-size: 22px; background: #e63946; color: #fff; border: none; border-radius: 12px; cursor: pointer; font-weight: bold; }
+  #gameover button:active { transform: scale(0.95); }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="ui">Puntos: <span id="score">0</span></div>
+<div id="gameover">
+  <h1>¡Te agarraron!</h1>
+  <p>Puntos: <span id="finalScore">0</span></p>
+  <p class="hs">Récord: <span id="highScore">0</span></p>
+  <button onclick="startGame()">Reintentar</button>
+</div>
+<script>
+// ============================================
+// REEMPLAZÁ ESTAS URLs CON LAS TUYAS DE GITHUB
+// ============================================
+const urls = {
+  espalda: 'https://raw.githubusercontent.com/TU-USUARIO/TU-REPO/main/espalda.png',
+  frente:  'https://raw.githubusercontent.com/TU-USUARIO/TU-REPO/main/frente.png',
+  izq:     'https://raw.githubusercontent.com/TU-USUARIO/TU-REPO/main/perfil_izq.png',
+  der:     'https://raw.githubusercontent.com/TU-USUARIO/TU-REPO/main/perfil_der.png',
+  fondo:   'https://raw.githubusercontent.com/TU-USUARIO/TU-REPO/main/fondo.jpg'
+};
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+const images = {};
+let loaded = 0;
+const total = Object.keys(urls).length;
+
+for (const key in urls) {
+  images[key] = new Image();
+  images[key].crossOrigin = 'anonymous';
+  images[key].onload = () => { loaded++; if (loaded === total) startGame(); };
+  images[key].onerror = () => { loaded++; if (loaded === total) startGame(); };
+  images[key].src = urls[key];
+}
+
+let playerLane, targetX, playerX;
+let playerY, jumpY, jumpVel, isJumping;
+let isSliding, slideTimer;
+let score, distance, collectibleScore, speed;
+let gameOver;
+let obstacles, collectibles;
+let spawnTimer, bgOffset;
+let charState, charTimer;
+let highScore = parseInt(localStorage.getItem('highScore') || '0');
+
+const LANES = [0.25, 0.5, 0.75];
+const OBSTACLE_TYPES = [
+  { text: 'Causa', color: '#e63946' },
+  { text: 'Fallo', color: '#9d0208' },
+  { text: 'FMI', color: '#f77f00' },
+  { text: 'Tarifazo', color: '#fcbf49' },
+  { text: 'Devalúa', color: '#6a4c93' }
+];
+const COLLECTIBLE_TYPES = [
+  { text: 'AUH', color: '#2a9d8f' },
+  { text: 'Progresar', color: '#457b9d' },
+  { text: 'Obra', color: '#e76f51' },
+  { text: 'Uni', color: '#9b5de5' },
+  { text: 'Salud', color: '#e63946' },
+  { text: 'Educ', color: '#00b4d8' }
+];
+
+function startGame() {
+  playerLane = 1;
+  playerX = W * LANES[1];
+  targetX = playerX;
+  playerY = H - H * 0.25;
+  jumpY = 0;
+  jumpVel = 0;
+  isJumping = false;
+  isSliding = false;
+  slideTimer = 0;
+  score = 0;
+  distance = 0;
+  collectibleScore = 0;
+  speed = 5;
+  gameOver = false;
+  obstacles = [];
+  collectibles = [];
+  spawnTimer = 0;
+  bgOffset = 0;
+  charState = 'espalda';
+  charTimer = 0;
+  document.getElementById('gameover').style.display = 'none';
+  document.getElementById('score').textContent = '0';
+  requestAnimationFrame(loop);
+}
+
+let touchStartX = 0, touchStartY = 0;
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  touchStartX = e.touches[0].clientX;
+  touchStartY = e.touches[0].clientY;
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  if (gameOver) return;
+  const dx = e.changedTouches[0].clientX - touchStartX;
+  const dy = e.changedTouches[0].clientY - touchStartY;
+  if (Math.abs(dx) > Math.abs(dy)) {
+    if (dx > 30) moveRight();
+    else if (dx < -30) moveLeft();
+  } else {
+    if (dy < -30) jump();
+    else if (dy > 30) slide();
+  }
+}, { passive: false });
+
+document.addEventListener('keydown', e => {
+  if (gameOver && (e.key === ' ' || e.key === 'Enter')) { startGame(); return; }
+  if (e.key === 'ArrowLeft') moveLeft();
+  if (e.key === 'ArrowRight') moveRight();
+  if (e.key === 'ArrowUp') jump();
+  if (e.key === 'ArrowDown') slide();
+});
+
+function moveLeft() {
+  if (playerLane > 0) {
+    playerLane--;
+    targetX = W * LANES[playerLane];
+    charState = 'izq';
+    charTimer = 0.25;
+  }
+}
+
+function moveRight() {
+  if (playerLane < 2) {
+    playerLane++;
+    targetX = W * LANES[playerLane];
+    charState = 'der';
+    charTimer = 0.25;
+  }
+}
+
+function jump() {
+  if (!isJumping && !isSliding) {
+    isJumping = true;
+    jumpVel = -18;
+  }
+}
+
+function slide() {
+  if (!isJumping && !isSliding) {
+    isSliding = true;
+    slideTimer = 0.6;
+  }
+}
+
+function spawnObstacle() {
+  const type = OBSTACLE_TYPES[Math.floor(Math.random() * OBSTACLE_TYPES.length)];
+  const lane = Math.floor(Math.random() * 3);
+  const obsType = Math.floor(Math.random() * 3);
+  obstacles.push({
+    lane, x: W * LANES[lane], y: -100,
+    type: obsType, text: type.text, color: type.color,
+    w: W * 0.14, h: W * 0.18
+  });
+}
+
+function spawnCollectible() {
+  const type = COLLECTIBLE_TYPES[Math.floor(Math.random() * COLLECTIBLE_TYPES.length)];
+  const lane = Math.floor(Math.random() * 3);
+  collectibles.push({
+    lane, x: W * LANES[lane], y: -100,
+    text: type.text, color: type.color,
+    r: W * 0.04, collected: false
+  });
+}
+
+let lastTime = 0;
+
+function loop(t) {
+  const dt = Math.min((t - lastTime) / 1000, 0.05);
+  lastTime = t;
+  update(dt);
+  draw();
+  if (!gameOver) requestAnimationFrame(loop);
+}
+
+function update(dt) {
+  if (gameOver) return;
+
+  distance += speed * dt * 30;
+  speed = Math.min(5 + distance / 800, 15);
+
+  playerX += (targetX - playerX) * 0.2;
+
+  if (isJumping) {
+    jumpVel += 1.2;
+    jumpY += jumpVel;
+    if (jumpY >= 0) { jumpY = 0; isJumping = false; jumpVel = 0; }
+  }
+
+  if (isSliding) {
+    slideTimer -= dt;
+    if (slideTimer <= 0) isSliding = false;
+  }
+
+  if (charTimer > 0) {
+    charTimer -= dt;
+    if (charTimer <= 0) charState = 'espalda';
+  }
+
+  bgOffset += speed * dt * 100;
+  if (bgOffset > H) bgOffset -= H;
+
+  spawnTimer += dt;
+  if (spawnTimer > 0.7) {
+    spawnTimer = 0;
+    if (Math.random() < 0.6) spawnObstacle();
+    else spawnCollectible();
+  }
+
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    const o = obstacles[i];
+    o.y += speed * dt * 350;
+    if (o.y > H + 200) obstacles.splice(i, 1);
+  }
+
+  for (let i = collectibles.length - 1; i >= 0; i--) {
+    const c = collectibles[i];
+    c.y += speed * dt * 350;
+    if (c.y > H + 200) collectibles.splice(i, 1);
+  }
+
+  const pw = W * 0.14;
+  const ph = isSliding ? W * 0.08 : W * 0.18;
+  const px = playerX - pw / 2;
+  const py = playerY + jumpY - ph;
+
+  for (const o of obstacles) {
+    const ox = o.x - o.w / 2;
+    const oy = o.y;
+    if (px < ox + o.w && px + pw > ox && py < oy + o.h && py + ph > oy) {
+      if (o.type === 1 && isJumping && jumpY < -40) continue;
+      if (o.type === 2 && isSliding) continue;
+      gameOver = true;
+      charState = 'frente';
+      const finalScore = Math.floor(distance / 10) + collectibleScore;
+      if (finalScore > highScore) {
+        highScore = finalScore;
+        localStorage.setItem('highScore', highScore);
+      }
+      document.getElementById('finalScore').textContent = finalScore;
+      document.getElementById('highScore').textContent = highScore;
+      document.getElementById('gameover').style.display = 'flex';
+      return;
+    }
+  }
+
+  for (const c of collectibles) {
+    if (c.collected) continue;
+    const dx = playerX - c.x;
+    const dy = (playerY + jumpY - W * 0.09) - c.y;
+    if (Math.sqrt(dx * dx + dy * dy) < c.r + W * 0.07) {
+      c.collected = true;
+      collectibleScore += 50;
+    }
+  }
+
+  score = Math.floor(distance / 10) + collectibleScore;
+  document.getElementById('score').textContent = score;
+}
+
+function draw() {
+  if (images.fondo && images.fondo.complete && images.fondo.naturalWidth > 0) {
+    ctx.drawImage(images.fondo, 0, bgOffset - H, W, H);
+    ctx.drawImage(images.fondo, 0, bgOffset, W, H);
+  } else {
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#1a1a2e');
+    grad.addColorStop(1, '#16213e');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(W * 0.1, 0, W * 0.8, H);
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([25, 25]);
+  ctx.beginPath();
+  ctx.moveTo(W * 0.375, 0); ctx.lineTo(W * 0.375, H);
+  ctx.moveTo(W * 0.625, 0); ctx.lineTo(W * 0.625, H);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const all = [
+    ...obstacles.map(o => ({ ...o, kind: 'obs' })),
+    ...collectibles.filter(c => !c.collected).map(c => ({ ...c, kind: 'col' }))
+  ];
+  all.sort((a, b) => a.y - b.y);
+
+  for (const item of all) {
+    const scale = 0.5 + (item.y / H) * 0.6;
+    if (item.kind === 'obs') {
+      const w = item.w * scale;
+      const h = item.h * scale;
+      ctx.fillStyle = item.color;
+      ctx.fillRect(item.x - w / 2, item.y, w, h);
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(item.x - w / 2, item.y, w, h);
+      ctx.fillStyle = '#fff';
+      ctx.font = `bold ${Math.max(10, 13 * scale)}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.fillText(item.text, item.x, item.y + h / 2 + 4);
+    } else {
+      const r = item.r * scale;
+      ctx.beginPath();
+      ctx.arc(item.x, item.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = item.color;
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = `bold ${Math.max(8, 10 * scale)}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.fillText(item.text, item.x, item.y + 4);
+    }
+  }
+
+  const img = images[charState];
+  const pw = W * 0.18;
+  const ph = W * 0.22;
+  const px = playerX - pw / 2;
+  let py = playerY + jumpY - ph;
+  let drawW = pw, drawH = ph;
+
+  if (isSliding) {
+    drawH = ph * 0.6;
+    py = playerY + jumpY - drawH;
+  }
+
+  if (img && img.complete && img.naturalWidth > 0) {
+    ctx.drawImage(img, px, py, drawW, drawH);
+  } else {
+    ctx.fillStyle = '#e63946';
+    ctx.fillRect(px, py, drawW, drawH);
+    ctx.fillStyle = '#fff';
+    ctx.font = `bold ${W * 0.03}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.fillText('JEFA', playerX, py + drawH / 2);
+  }
+}
+</script>
+</body>
+</html>
